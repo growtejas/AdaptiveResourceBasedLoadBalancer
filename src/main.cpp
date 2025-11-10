@@ -6,6 +6,7 @@
 #include <thread>
 #include <atomic>
 #include <csignal>
+#include <boost/asio.hpp>
 
 std::atomic<bool> stop_flag{false};
 void handle_sigint(int) { stop_flag.store(true); }
@@ -18,8 +19,11 @@ int main() {
         YAML::Node config = YAML::LoadFile("config.yaml");
         int listen_port = config["listen_port"].as<int>();
         int monitor_interval = config["monitor_interval_seconds"].as<int>();
+        std::string strategy = config["strategy"] ? config["strategy"].as<std::string>() : "least_cpu";
 
         SharedState state;
+        state.set_strategy(strategy);  // ✅ tell SharedState which mode to use
+
         for (const auto& node : config["targets"]) {
             std::string name = node["name"].as<std::string>();
             int port = node["host_port"].as<int>();
@@ -27,12 +31,14 @@ int main() {
             std::cout << "[Config] Added " << name << " on 127.0.0.1:" << port << "\n";
         }
 
+        std::cout << "[INFO] Load-balancing strategy: " << strategy << "\n";
+
         DockerMonitor monitor(state, monitor_interval);
         monitor.start();
 
         boost::asio::io_context io_context;
         ProxyServer server(io_context, listen_port, state);
-        std::cout << "[INFO] Listening on " << listen_port << "\n";
+        std::cout << "[INFO] Listening on port " << listen_port << "\n";
 
         server.start_accept();
 
@@ -42,14 +48,19 @@ int main() {
             while (!stop_flag.load()) {
                 std::cout << "> ";
                 if (!std::getline(std::cin, cmd)) break;
-                if (cmd == "exit") { stop_flag.store(true); break; }
+
+                if (cmd == "exit") {
+                    stop_flag.store(true);
+                    break;
+                }
+
                 if (cmd == "status") {
                     auto snap = state.snapshot();
                     std::cout << "NAME\tPORT\tHEALTH\tCPU%\n";
                     for (auto& t : snap)
                         std::cout << t.name << "\t" << t.port << "\t"
                                   << (t.healthy ? "OK" : "DOWN") << "\t"
-                                  << t.cpu_percent << "\n";
+                                  << t.cpu_percent.load() << "\n";
                 }
             }
         });

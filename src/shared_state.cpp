@@ -1,5 +1,6 @@
 #include "shared_state.h"
 #include <algorithm>
+#include <limits>
 
 void SharedState::add_target(const std::string& name, const std::string& host, int port) {
     std::lock_guard<std::mutex> lock(mtx_);
@@ -26,24 +27,43 @@ void SharedState::update_target_stats(const std::string& name, double cpu_percen
             return;
         }
     }
-    // if not found, ignore (or optionally add)
+    // not found → ignore
 }
 
-std::optional<std::pair<std::string,int>> SharedState::choose_best_backend() {
+void SharedState::set_strategy(const std::string& strategy) {
     std::lock_guard<std::mutex> lock(mtx_);
-    bool found = false;
+    strategy_ = strategy;
+}
+
+std::optional<std::pair<std::string,int>> SharedState::choose_backend() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (targets_.empty()) return std::nullopt;
+
+    // keep only healthy
+    std::vector<TargetInfo*> healthy_targets;
+    for (auto& t : targets_) {
+        if (t.healthy.load()) healthy_targets.push_back(&t);
+    }
+    if (healthy_targets.empty()) return std::nullopt;
+
+    // ----- ROUND ROBIN -----
+    if (strategy_ == "round_robin") {
+        TargetInfo* target = healthy_targets[rr_index_ % healthy_targets.size()];
+        rr_index_ = (rr_index_ + 1) % healthy_targets.size();
+        return std::make_pair(target->host, target->port);
+    }
+
+    // ----- LEAST CPU -----
+    TargetInfo* best = nullptr;
     double best_cpu = std::numeric_limits<double>::infinity();
-    std::pair<std::string,int> chosen;
-    for (auto &t : targets_) {
-        if (!t.healthy.load()) continue;
-        double c = t.cpu_percent.load();
-        if (!found || c < best_cpu) {
+    for (auto* t : healthy_targets) {
+        double c = t->cpu_percent.load();
+        if (!best || c < best_cpu) {
+            best = t;
             best_cpu = c;
-            chosen = {t.host, t.port};
-            found = true;
         }
     }
-    if (found) return chosen;
+    if (best) return std::make_pair(best->host, best->port);
     return std::nullopt;
 }
 

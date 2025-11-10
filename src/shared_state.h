@@ -4,6 +4,8 @@
 #include <mutex>
 #include <atomic>
 #include <optional>
+#include <stdexcept>
+#include <algorithm>
 
 struct TargetInfo {
     std::string name;
@@ -13,6 +15,9 @@ struct TargetInfo {
     std::atomic<bool> healthy{true};
 
     TargetInfo() = default;
+
+    TargetInfo(const std::string& n, const std::string& h, int p)
+        : name(n), host(h), port(p) {}
 
     // Copy constructor
     TargetInfo(const TargetInfo& other)
@@ -30,7 +35,7 @@ struct TargetInfo {
           cpu_percent(other.cpu_percent.load()),
           healthy(other.healthy.load()) {}
 
-    // Assignment operator
+    // Copy assignment
     TargetInfo& operator=(const TargetInfo& other) {
         if (this != &other) {
             name = other.name;
@@ -54,24 +59,30 @@ struct TargetInfo {
         return *this;
     }
 };
+
 class SharedState {
 public:
     SharedState() = default;
 
-    // add initial targets (called before monitor starts)
+    // Add initial targets (called before monitor starts)
     void add_target(const std::string& name, const std::string& host, int port);
 
-    // get a snapshot copy of targets (thread-safe)
+    // Get a snapshot copy of targets (thread-safe)
     std::vector<TargetInfo> snapshot();
 
-    // update CPU% and health for target by name
+    // Update CPU% and health for target by name
     void update_target_stats(const std::string& name, double cpu_percent, bool healthy);
 
-    // choose best backend (lowest CPU%) among healthy targets
-    // returns pair<host,port> if found, otherwise nullopt
-    std::optional<std::pair<std::string,int>> choose_best_backend();
+    // Select backend based on configured strategy
+    std::optional<std::pair<std::string,int>> choose_backend();
+
+    // Set balancing strategy: "least_cpu" or "round_robin"
+    void set_strategy(const std::string& strategy);
 
 private:
     std::mutex mtx_;
     std::vector<TargetInfo> targets_;
+    std::string strategy_ = "least_cpu";
+    size_t rr_index_ = 0;
 };
+
